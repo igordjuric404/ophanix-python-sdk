@@ -66,14 +66,23 @@ def _version_from_local_pyproject() -> str | None:
 
 GATEWAY_TOOL_DISCOVERY_PATH = "/api/v1/gateway/tools"
 GATEWAY_CAPABILITIES_PATH = "/api/v1/gateway/capabilities"
+GATEWAY_AUTHORIZATION_STATUS_PATH_PREFIX = "/api/v1/gateway/authorizations"
 GATEWAY_TOOL_INVOKE_PATH_PREFIX = "/api/v1/tools"
 GATEWAY_TOOL_INVOKE_PATH_SUFFIX = "/invoke"
 SDK_GATEWAY_CONTRACT_VERSION = "tool-gateway.v1"
 SDK_VERSION = _sdk_version()
 SDK_USER_AGENT = f"ophanix-tool-gateway-python/{SDK_VERSION}"
 DEFAULT_GATEWAY_TOKEN_ENV_VAR = "OPHANIX_GATEWAY_TOKEN"
+DEFAULT_GATEWAY_BASE_URL_ENV_VAR = "OPHANIX_GATEWAY_BASE_URL"
 RETRYABLE_DISCOVERY_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 RETRYABLE_TOOL_CALL_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+AUTHORIZATION_REQUIRED_REASON_CODES = frozenset(
+    {
+        "approval_required",
+        "authorization_required",
+        "delegated_authorization_expired",
+    }
+)
 DEFAULT_DISCOVERY_RETRY_MAX_SLEEP_SECONDS = 5.0
 DEFAULT_DISCOVERY_RETRY_JITTER_RATIO = 0.2
 DEFAULT_TOOL_CALL_RETRY_MAX_SLEEP_SECONDS = 5.0
@@ -215,6 +224,34 @@ class ToolDefinition:
 
 
 @dataclass(frozen=True)
+class AuthorizationChallenge:
+    """User-delegated authorization challenge returned by the Tool Gateway."""
+
+    authorization_session_id: str
+    provider: str
+    required_scopes: tuple[str, ...]
+    authorization_url: str | None = None
+    approval_state: str | None = None
+    status: str | None = None
+    expires_at: str | None = None
+    raw: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class AuthorizationStatus:
+    """Current status of a Tool Gateway authorization session."""
+
+    authorization_session_id: str
+    provider: str
+    required_scopes: tuple[str, ...]
+    status: str
+    approval_state: str | None = None
+    authorization_url: str | None = None
+    expires_at: str | None = None
+    raw: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class GatewayCompatibility:
     """Result returned by SDK-to-gateway contract probing."""
 
@@ -298,6 +335,31 @@ class ToolDeniedError(ToolGatewayError):
         self.reason_code = reason_code
 
 
+class ToolAuthorizationRequired(ToolDeniedError):
+    """Raised when a tool call requires delegated user authorization or approval."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: str,
+        challenge: AuthorizationChallenge,
+        status_code: int | None = 403,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+        response_body: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            reason_code=reason_code,
+            status_code=status_code,
+            request_id=request_id,
+            correlation_id=correlation_id,
+            response_body=response_body,
+        )
+        self.challenge = challenge
+
+
 class ToolAuthenticationError(ToolGatewayError):
     """Raised when gateway authentication fails before policy evaluation."""
 
@@ -336,6 +398,38 @@ class _ClientConfig:
 
 class OphanixToolGatewayClient:
     """Small synchronous SDK client for external Python agents."""
+
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        base_url_env_var: str = DEFAULT_GATEWAY_BASE_URL_ENV_VAR,
+        token_env_var: str = DEFAULT_GATEWAY_TOKEN_ENV_VAR,
+        config: ToolGatewayClientConfig | None = None,
+        http_client: httpx.Client | None = None,
+        event_hook: TelemetryEventHook | None = None,
+    ) -> "OphanixToolGatewayClient":
+        """Construct a sync client from gateway URL and token environment variables."""
+
+        env_var = _require_text(base_url_env_var, "base_url_env_var")
+        base_url = os.environ.get(env_var)
+        if base_url is None:
+            raise ToolGatewayValidationError(f"{env_var} environment variable is required")
+        token_provider = EnvironmentTokenProvider(token_env_var)
+        if config is not None:
+            return cls.from_config(
+                base_url=base_url,
+                token_provider=token_provider,
+                config=config,
+                http_client=http_client,
+                event_hook=event_hook,
+            )
+        return cls(
+            base_url=base_url,
+            token_provider=token_provider,
+            http_client=http_client,
+            event_hook=event_hook,
+        )
 
     @classmethod
     def from_config(
@@ -694,6 +788,32 @@ class OphanixToolGatewayClient:
             )
         return _gateway_compatibility(response_body)
 
+    def get_authorization_status(self, authorization_session_id: str) -> AuthorizationStatus:
+        """Poll the gateway for the current delegated authorization session status."""
+
+        self._ensure_open()
+        normalized_session_id = _require_text(authorization_session_id, "authorization_session_id")
+        auth_context = self._auth_context()
+        try:
+            response = _send_limited_sync_request(
+                self._http_client,
+                "GET",
+                f"{self.base_url}{GATEWAY_AUTHORIZATION_STATUS_PATH_PREFIX}/{quote(normalized_session_id, safe='')}",
+                max_response_bytes=self.max_response_bytes,
+                headers=auth_context.headers,
+                timeout=self.timeout_seconds,
+            )
+        except httpx.HTTPError as exc:
+            raise ToolGatewayError("Tool Gateway transport error.", code="transport_error") from exc
+        response_body = _response_json(response, max_response_bytes=self.max_response_bytes)
+        if response.status_code >= 400:
+            _raise_gateway_error(
+                response_body,
+                response.status_code,
+                retry_after_seconds=_retry_after_seconds(response),
+            )
+        return _authorization_status(response_body)
+
     def get_tool(self, tool_name: str) -> ToolDefinition:
         """Return one tool definition by name or id from the list contract."""
 
@@ -966,6 +1086,38 @@ class OphanixToolGatewayClient:
 
 class AsyncOphanixToolGatewayClient:
     """Async SDK client for external Python agents running on event loops."""
+
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        base_url_env_var: str = DEFAULT_GATEWAY_BASE_URL_ENV_VAR,
+        token_env_var: str = DEFAULT_GATEWAY_TOKEN_ENV_VAR,
+        config: ToolGatewayClientConfig | None = None,
+        http_client: httpx.AsyncClient | None = None,
+        event_hook: TelemetryEventHook | None = None,
+    ) -> "AsyncOphanixToolGatewayClient":
+        """Construct an async client from gateway URL and token environment variables."""
+
+        env_var = _require_text(base_url_env_var, "base_url_env_var")
+        base_url = os.environ.get(env_var)
+        if base_url is None:
+            raise ToolGatewayValidationError(f"{env_var} environment variable is required")
+        token_provider = EnvironmentTokenProvider(token_env_var)
+        if config is not None:
+            return cls.from_config(
+                base_url=base_url,
+                token_provider=token_provider,
+                config=config,
+                http_client=http_client,
+                event_hook=event_hook,
+            )
+        return cls(
+            base_url=base_url,
+            token_provider=token_provider,
+            http_client=http_client,
+            event_hook=event_hook,
+        )
 
     @classmethod
     def from_config(
@@ -1323,6 +1475,32 @@ class AsyncOphanixToolGatewayClient:
                 retry_after_seconds=_retry_after_seconds(response),
             )
         return _gateway_compatibility(response_body)
+
+    async def get_authorization_status(self, authorization_session_id: str) -> AuthorizationStatus:
+        """Poll the gateway for the current delegated authorization session status."""
+
+        self._ensure_open()
+        normalized_session_id = _require_text(authorization_session_id, "authorization_session_id")
+        auth_context = await self._auth_context()
+        try:
+            response = await _send_limited_async_request(
+                self._http_client,
+                "GET",
+                f"{self.base_url}{GATEWAY_AUTHORIZATION_STATUS_PATH_PREFIX}/{quote(normalized_session_id, safe='')}",
+                max_response_bytes=self.max_response_bytes,
+                headers=auth_context.headers,
+                timeout=self.timeout_seconds,
+            )
+        except httpx.HTTPError as exc:
+            raise ToolGatewayError("Tool Gateway transport error.", code="transport_error") from exc
+        response_body = _response_json(response, max_response_bytes=self.max_response_bytes)
+        if response.status_code >= 400:
+            _raise_gateway_error(
+                response_body,
+                response.status_code,
+                retry_after_seconds=_retry_after_seconds(response),
+            )
+        return _authorization_status(response_body)
 
     async def get_tool(self, tool_name: str) -> ToolDefinition:
         """Return one tool definition by name or id from the list contract."""
@@ -1881,6 +2059,60 @@ def _gateway_compatibility(body: dict[str, Any]) -> GatewayCompatibility:
     )
 
 
+def _authorization_challenge(
+    body: dict[str, Any],
+    *,
+    response_body: dict[str, Any],
+) -> AuthorizationChallenge | None:
+    error = _optional_mapping(body.get("error")) or {}
+    authorization = _optional_mapping(error.get("authorization"))
+    if authorization is None:
+        return None
+    return AuthorizationChallenge(
+        authorization_session_id=_required_response_string(authorization, "authorization_session_id"),
+        provider=_required_response_string(authorization, "provider"),
+        required_scopes=tuple(_response_string_list(authorization.get("required_scopes"))),
+        authorization_url=_optional_response_string_field(authorization, "authorization_url"),
+        approval_state=_optional_response_string_field(authorization, "approval_state"),
+        status=_optional_response_string_field(authorization, "status"),
+        expires_at=_optional_response_string_field(authorization, "expires_at"),
+        raw=_immutable_mapping(response_body),
+    )
+
+
+def _authorization_status(body: dict[str, Any]) -> AuthorizationStatus:
+    return AuthorizationStatus(
+        authorization_session_id=_required_response_string(body, "authorization_session_id"),
+        provider=_required_response_string(body, "provider"),
+        required_scopes=tuple(_response_string_list(body.get("required_scopes"))),
+        status=_required_response_string(body, "status"),
+        approval_state=_optional_response_string_field(body, "approval_state"),
+        authorization_url=_optional_response_string_field(body, "authorization_url"),
+        expires_at=_optional_response_string_field(body, "expires_at"),
+        raw=_immutable_mapping(body),
+    )
+
+
+def _response_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ToolGatewayError(
+            "Tool Gateway response field must be a list of strings: required_scopes.",
+            code="invalid_response",
+        )
+    scopes: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ToolGatewayError(
+                "Tool Gateway response field must be a list of strings: required_scopes.",
+                code="invalid_response",
+            )
+        if item not in scopes:
+            scopes.append(item)
+    return scopes
+
+
 def _clone_tool_definition(tool: ToolDefinition) -> ToolDefinition:
     return ToolDefinition(
         id=tool.id,
@@ -1905,9 +2137,21 @@ def _raise_denied(body: dict[str, Any], status_code: int) -> None:
     reason_code = body.get("reason_code")
     if reason_code is None:
         _raise_gateway_error(body, status_code)
+    normalized_reason_code = str(reason_code)
+    challenge = _authorization_challenge(body, response_body=body)
+    if normalized_reason_code in AUTHORIZATION_REQUIRED_REASON_CODES and challenge is not None:
+        raise ToolAuthorizationRequired(
+            "Tool call requires delegated user authorization.",
+            reason_code=normalized_reason_code,
+            challenge=challenge,
+            status_code=status_code,
+            request_id=_optional_string(body.get("request_id")),
+            correlation_id=_optional_string(body.get("correlation_id")),
+            response_body=body,
+        )
     raise ToolDeniedError(
         "Tool call denied by gateway policy.",
-        reason_code=str(reason_code),
+        reason_code=normalized_reason_code,
         status_code=status_code,
         request_id=_optional_string(body.get("request_id")),
         correlation_id=_optional_string(body.get("correlation_id")),

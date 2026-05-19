@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import os
 import unittest
 from collections.abc import Callable
 from collections.abc import Mapping
+from unittest.mock import patch
 from typing import Any
 from typing import cast
 
@@ -10,9 +13,12 @@ import httpx
 import ophanix_tool_gateway as sdk
 
 from ophanix_tool_gateway import (
+    AsyncOphanixToolGatewayClient,
+    AuthorizationStatus,
     GatewayCompatibility,
     OphanixToolGatewayClient,
     StaticTokenProvider,
+    ToolAuthorizationRequired,
     ToolDeniedError,
     ToolGatewayClientConfig,
     ToolGatewayError,
@@ -37,10 +43,13 @@ class StandaloneSdkBehaviorTests(unittest.TestCase):
     def test_public_api_snapshot_includes_mvp_sdk_types(self) -> None:
         expected_exports = {
             "AsyncOphanixToolGatewayClient",
+            "AuthorizationChallenge",
+            "AuthorizationStatus",
             "EnvironmentTokenProvider",
             "GatewayCompatibility",
             "OphanixToolGatewayClient",
             "StaticTokenProvider",
+            "ToolAuthorizationRequired",
             "ToolGatewayClientConfig",
             "ToolGatewayValidationError",
         }
@@ -213,6 +222,66 @@ class StandaloneSdkBehaviorTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.reason_code, "permission_missing")
 
+    def test_authorization_required_response_raises_challenge_error(self) -> None:
+        client = _client(
+            lambda _request: httpx.Response(
+                403,
+                json={
+                    "request_id": "req-authz",
+                    "correlation_id": "corr-authz",
+                    "tool_name": "claims.lookup",
+                    "decision": {"decision": "pending_authorization"},
+                    "reason_code": "authorization_required",
+                    "result": None,
+                    "error": {
+                        "code": "authorization_required",
+                        "message": "User authorization is required.",
+                        "authorization": {
+                            "authorization_session_id": "oauthsess_123",
+                            "authorization_url": "https://auth.example.com/start",
+                            "provider": "claims-oauth",
+                            "required_scopes": ["claims.read"],
+                            "approval_state": "pending_authorization",
+                        },
+                    },
+                },
+            )
+        )
+
+        with self.assertRaises(ToolAuthorizationRequired) as raised:
+            client.call_tool("claims.lookup", {"claim_id": "claim_123"})
+
+        self.assertEqual(raised.exception.reason_code, "authorization_required")
+        self.assertEqual(raised.exception.challenge.authorization_session_id, "oauthsess_123")
+        self.assertEqual(raised.exception.challenge.required_scopes, ("claims.read",))
+
+    def test_authorization_status_helper_polls_gateway(self) -> None:
+        seen: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["path"] = request.url.path
+            return httpx.Response(
+                200,
+                json={
+                    "authorization_session_id": "oauthsess_123",
+                    "authorization_url": "https://auth.example.com/start",
+                    "provider": "claims-oauth",
+                    "required_scopes": ["claims.read"],
+                    "status": "authorized",
+                    "approval_state": "approved",
+                },
+            )
+
+        client = _client(handler)
+
+        status = client.get_authorization_status("oauthsess_123")
+
+        self.assertIsInstance(status, AuthorizationStatus)
+        self.assertEqual(seen["path"], "/api/v1/gateway/authorizations/oauthsess_123")
+        self.assertEqual(status.authorization_session_id, "oauthsess_123")
+        self.assertEqual(status.status, "authorized")
+        self.assertEqual(status.approval_state, "approved")
+
     def test_check_compatibility_reads_authenticated_capabilities_contract(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             self.assertEqual(request.url.path, "/api/v1/gateway/capabilities")
@@ -254,6 +323,63 @@ class StandaloneSdkBehaviorTests(unittest.TestCase):
         self.assertTrue(client.cache_tools)
         self.assertEqual(client.cache_ttl_seconds, 10.0)
         self.assertEqual(client.discovery_max_retries, 0)
+
+    def test_from_env_constructs_client_from_gateway_environment(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json=[TOOL_FIXTURE])
+
+        with patch.dict(
+            os.environ,
+            {
+                "OPHANIX_GATEWAY_BASE_URL": "https://gateway.example.test",
+                "OPHANIX_GATEWAY_TOKEN": "sdk-token",
+            },
+        ):
+            client = OphanixToolGatewayClient.from_env(
+                http_client=httpx.Client(transport=httpx.MockTransport(handler))
+            )
+            tools = client.list_tools()
+
+        self.assertEqual([tool.name for tool in tools], ["claims.lookup"])
+        self.assertEqual(str(requests[0].url), "https://gateway.example.test/api/v1/gateway/tools?limit=50&offset=0")
+        self.assertEqual(requests[0].headers["Authorization"], "Bearer sdk-token")
+
+    def test_from_env_requires_gateway_base_url(self) -> None:
+        with patch.dict(os.environ, {"OPHANIX_GATEWAY_TOKEN": "sdk-token"}, clear=True):
+            with self.assertRaisesRegex(ToolGatewayValidationError, "OPHANIX_GATEWAY_BASE_URL"):
+                OphanixToolGatewayClient.from_env()
+
+    def test_async_from_env_constructs_client_from_gateway_environment(self) -> None:
+        async def exercise() -> None:
+            requests: list[httpx.Request] = []
+
+            async def handler(request: httpx.Request) -> httpx.Response:
+                requests.append(request)
+                return httpx.Response(200, json=[TOOL_FIXTURE])
+
+            with patch.dict(
+                os.environ,
+                {
+                    "OPHANIX_GATEWAY_BASE_URL": "https://gateway.example.test",
+                    "OPHANIX_GATEWAY_TOKEN": "sdk-token",
+                },
+            ):
+                async with AsyncOphanixToolGatewayClient.from_env(
+                    http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+                ) as client:
+                    tools = await client.list_tools()
+
+            self.assertEqual([tool.name for tool in tools], ["claims.lookup"])
+            self.assertEqual(
+                str(requests[0].url),
+                "https://gateway.example.test/api/v1/gateway/tools?limit=50&offset=0",
+            )
+            self.assertEqual(requests[0].headers["Authorization"], "Bearer sdk-token")
+
+        asyncio.run(exercise())
 
     def test_list_all_tools_enforces_max_total(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
