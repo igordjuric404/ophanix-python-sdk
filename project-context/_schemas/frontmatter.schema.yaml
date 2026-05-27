@@ -1,0 +1,47 @@
+schema_version: 1
+name: project-context-frontmatter
+required:
+  - type
+  - id
+  - repo
+  - status
+  - created
+  - last_updated
+  - last_reviewed
+  - last_verified_commit
+recommended:
+  - owner
+  - canonical
+  - stability
+  - code_paths
+  - source_inputs
+  - related_features
+  - related_audits
+  - related_issues
+  - related_plans
+  - related_logs
+  - related_decisions
+  - supersedes
+  - superseded_by
+  - tags
+status_values:
+  - draft
+  - active
+  - open
+  - in-progress
+  - resolved
+  - accepted
+  - proposed
+  - superseded
+  - archived
+  - completed
+stability_values:
+  - experimental
+  - active
+  - stable
+  - deprecated
+rules:
+  - Dates use YYYY-MM-DD.
+  - last_verified_commit may be unknown when not yet verified.
+  - code_paths use repository-relative paths.
+  - Relationship fields use stable IDs or project-context-relative paths.

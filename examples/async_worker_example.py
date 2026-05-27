@@ -4,12 +4,10 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
 from ophanix_tool_gateway import (
     AsyncOphanixToolGatewayClient,
-    EnvironmentTokenProvider,
     ToolDeniedError,
     ToolGatewayClientConfig,
     ToolGatewayError,
@@ -24,9 +22,7 @@ async def handle_claim_job(claim_id: str) -> dict[str, Any]:
         cache_tools=True,
         cache_ttl_seconds=60.0,
     )
-    async with AsyncOphanixToolGatewayClient.from_config(
-        base_url=os.environ["OPHANIX_GATEWAY_BASE_URL"],
-        token_provider=EnvironmentTokenProvider(),
+    async with AsyncOphanixToolGatewayClient.from_env(
         config=config,
     ) as client:
         compatibility = await client.check_compatibility()
@@ -50,4 +46,6 @@ async def handle_claim_job(claim_id: str) -> dict[str, Any]:
 
 
 if __name__ == "__main__":
+    import os
+
     print(asyncio.run(handle_claim_job(os.environ.get("CLAIM_ID", "claim_123"))))

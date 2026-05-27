@@ -1,0 +1,27 @@
+schema_version: 1
+name: project-context-index
+required:
+  - schema_version
+  - repo
+  - last_updated
+  - last_reviewed
+  - last_verified_commit
+  - canonical_documents
+  - routing
+  - ignore
+  - rules
+canonical_document_fields:
+  - id
+  - type
+  - path
+  - purpose
+routing_fields:
+  - first_read
+  - source_areas
+source_area_fields:
+  - path
+  - responsibility
+rules:
+  - INDEX.yaml is a machine-readable lookup, not a narrative document.
+  - Paths are repository-relative.
+  - Keep source_areas high signal; do not list generated caches.

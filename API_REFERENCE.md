@@ -41,6 +41,7 @@ OphanixToolGatewayClient(
 
 Methods:
 
+- `from_env(base_url_env_var: str = "OPHANIX_GATEWAY_BASE_URL", token_env_var: str = "OPHANIX_GATEWAY_TOKEN", config: ToolGatewayClientConfig | None = None, ...) -> OphanixToolGatewayClient`
 - `call_tool(tool_name: str, payload: dict[str, Any], correlation_id: str | None = None, idempotency_key: str | None = None) -> ToolCallResult`
 - `check_compatibility() -> GatewayCompatibility`
 - `list_tools(status: Literal["active"] | None = None, owner_team: str | None = None, limit: int = 50, offset: int = 0) -> list[ToolDefinition]`
@@ -51,9 +52,10 @@ Methods:
 
 ### `AsyncOphanixToolGatewayClient`
 
-Async client with the same constructor options and method names. `call_tool`,
+Async client with the same constructor options and method names. `from_env`,
+`call_tool`,
 `check_compatibility`, `list_tools`, `list_all_tools`, `get_tool`, and `close`
-are awaitable.
+are available; all except `from_env` are awaitable.
 
 ### `ToolGatewayClientConfig`
 
@@ -75,6 +77,16 @@ without the `Bearer` prefix.
 Token strings with the `Bearer ` prefix, whitespace, or unsupported characters
 raise `ToolGatewayValidationError` before a network request is sent. Tokens must
 be 4096 characters or fewer.
+
+## CLI
+
+The package installs `ophanix-tool-gateway`.
+
+- `ophanix-tool-gateway list-tools [--owner-team TEAM] [--limit N] [--offset N]`
+- `ophanix-tool-gateway call-tool TOOL_NAME PAYLOAD_JSON [--correlation-id ID] [--idempotency-key KEY]`
+
+Both commands read `OPHANIX_GATEWAY_BASE_URL` and `OPHANIX_GATEWAY_TOKEN` unless
+`--base-url` or `--token-env-var` is supplied. Output is JSON.
 
 ## Data Classes
 

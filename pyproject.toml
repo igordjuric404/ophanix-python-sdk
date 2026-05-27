@@ -32,6 +32,9 @@ Documentation = "https://github.com/ophanix/ophanix-python-sdk"
 Source = "https://github.com/ophanix/ophanix-python-sdk"
 Issues = "https://github.com/ophanix/ophanix-python-sdk/issues"
 
+[project.scripts]
+ophanix-tool-gateway = "ophanix_tool_gateway.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "mypy>=1.10,<2",

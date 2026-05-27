@@ -1,0 +1,26 @@
+schema_version: 1
+repo: repo-name
+last_updated: YYYY-MM-DD
+last_reviewed: YYYY-MM-DD
+last_verified_commit: unknown
+canonical_documents:
+  - id: MAP-repo-name
+    type: project-map
+    path: project-context/MAP.md
+    purpose: Repository orientation and routing.
+routing:
+  first_read:
+    - AGENTS.md
+    - project-context/MAP.md
+    - project-context/FEATURE_MAP.md
+    - project-context/CODEBASE_MAP.md
+  source_areas:
+    - path: path/
+      responsibility: What this path owns.
+ignore:
+  - node_modules/
+  - .venv/
+  - __pycache__/
+rules:
+  - Keep authored knowledge in Markdown with project-context frontmatter.
+  - Keep machine routing in this file.

@@ -1,0 +1,75 @@
+schema_version: 1
+repo: ophanix-python-sdk
+last_updated: 2026-05-27
+last_reviewed: 2026-05-27
+last_verified_commit: unknown
+canonical_documents:
+  - id: MAP-ophanix-python-sdk
+    type: project-map
+    path: project-context/MAP.md
+    purpose: Repository orientation and operating model.
+  - id: FEATURE-MAP-ophanix-python-sdk
+    type: feature-map
+    path: project-context/FEATURE_MAP.md
+    purpose: SDK feature ownership and routing.
+  - id: CODEBASE-MAP-ophanix-python-sdk
+    type: codebase-map
+    path: project-context/CODEBASE_MAP.md
+    purpose: Implementation-level source, test, docs, and release routing.
+  - id: RUNBOOK-validation-ophanix-python-sdk
+    type: runbook
+    path: project-context/runbooks/validation.md
+    purpose: Validation command selection.
+  - id: ADR-0001
+    type: decision
+    path: project-context/decisions/ADR-0001-use-project-context-for-agent-memory.md
+    purpose: Canonical project-context decision.
+  - id: GUIDE-ophanix-python-sdk-project-context
+    type: project-context-guide
+    path: project-context/README.md
+    purpose: Local rules for project-context usage.
+features:
+  - id: FEAT-0001
+    name: Tool Gateway Client
+    path: project-context/features/FEAT-0001-tool-gateway-client.md
+  - id: FEAT-0002
+    name: CLI Bootstrap Checks
+    path: project-context/features/FEAT-0002-cli-bootstrap-checks.md
+  - id: FEAT-0003
+    name: Packaging and Release Validation
+    path: project-context/features/FEAT-0003-packaging-release-validation.md
+  - id: FEAT-0004
+    name: Examples and Integration Guidance
+    path: project-context/features/FEAT-0004-examples-integration-guidance.md
+routing:
+  first_read:
+    - AGENTS.md
+    - project-context/MAP.md
+    - project-context/FEATURE_MAP.md
+    - project-context/CODEBASE_MAP.md
+    - project-context/runbooks/validation.md
+    - README.md
+    - API_REFERENCE.md
+  source_areas:
+    - path: src/ophanix_tool_gateway/
+      responsibility: SDK package source.
+    - path: tests/
+      responsibility: Smoke and behavior tests.
+    - path: examples/
+      responsibility: Runnable integration examples.
+    - path: scripts/
+      responsibility: Release validation.
+ignore:
+  - .mypy_cache/
+  - .pytest_cache/
+  - .ruff_cache/
+  - __pycache__/
+  - dist/
+  - build/
+  - .venv/
+rules:
+  - Keep authored knowledge in Markdown with project-context frontmatter.
+  - Keep machine routing in this file.
+  - Update public docs and tests for public SDK behavior changes.
+  - Do not index generated caches as canonical source.
+  - Update feature docs and validation runbook when SDK ownership or validation changes.

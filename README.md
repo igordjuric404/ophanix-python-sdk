@@ -3,12 +3,23 @@
 Python SDK for Ophanix. The current package provides the Tool Gateway client for
 agents that call governed tools through the Ophanix Tool Gateway.
 
+## Package Scope
+
+`ophanix-python-sdk` is the canonical external Python package for Ophanix
+client integrations. In the current `0.x` line, its supported runtime surface is
+the Tool Gateway: authenticated discovery, compatibility checks, governed tool
+calls, retries, idempotency, telemetry hooks, and safe error redaction. Agent
+registry, runtime-session, evidence-export, MCP approval, and OAuth delegation
+modules are planned control-plane surfaces and are not exposed by this package
+until their API contracts are stable.
+
 ## Install
 
 When the package is published to your configured Python index:
 
 ```bash
 pip install ophanix-python-sdk
+export OPHANIX_GATEWAY_BASE_URL="https://gateway.example.com"
 export OPHANIX_GATEWAY_TOKEN="replace-with-a-gateway-token"
 ```
 
@@ -42,17 +53,13 @@ Use `https://` gateway URLs outside local development. Plain `http://` is accept
 
 ```python
 from ophanix_tool_gateway import (
-    EnvironmentTokenProvider,
     OphanixToolGatewayClient,
     ToolAuthenticationError,
     ToolDeniedError,
     ToolGatewayError,
 )
 
-with OphanixToolGatewayClient(
-    base_url="https://gateway.example.com",
-    token_provider=EnvironmentTokenProvider(),
-) as client:
+with OphanixToolGatewayClient.from_env() as client:
     try:
         compatibility = client.check_compatibility()
         if not compatibility.compatible:
@@ -69,6 +76,25 @@ with OphanixToolGatewayClient(
         print([tool.name for tool in tools])
         print(result.result)
 ```
+
+For explicit configuration, pass `base_url` and a token provider directly or use
+`OphanixToolGatewayClient.from_config(...)`.
+
+## CLI Usage
+
+The package installs a small `ophanix-tool-gateway` command for the same
+canonical Tool Gateway flow:
+
+```bash
+ophanix-tool-gateway list-tools
+ophanix-tool-gateway call-tool claims.lookup '{"claim_id": "claim_123"}' \
+  --correlation-id first-run:claims \
+  --idempotency-key first-run-claims-123
+```
+
+The CLI reads `OPHANIX_GATEWAY_BASE_URL` and `OPHANIX_GATEWAY_TOKEN` by default
+and prints JSON responses. Use it for bootstrap checks and CI smoke tests; use
+the Python client in long-running agents.
 
 ## API Reference
 
@@ -123,6 +149,8 @@ Common constructor options:
 
 Main methods:
 
+- `from_env(base_url_env_var="OPHANIX_GATEWAY_BASE_URL", token_env_var="OPHANIX_GATEWAY_TOKEN", config=None, ...)`:
+  constructs a client from environment variables.
 - `call_tool(tool_name, payload, correlation_id=None, idempotency_key=None)`:
   invokes one tool. Payload must be a JSON object with string keys and finite
   numeric values. When `idempotency_key` is set, the SDK sends
@@ -405,8 +433,11 @@ python3 scripts/validate_release.py --strict-git
 
 The SDK depends only on `httpx`. It is also re-exported from
 `product_platform.tool_gateway` for compatibility with earlier internal imports.
-CI exercises the SDK on Python 3.11, 3.12, and 3.13. Dependency range changes
-must keep that matrix green before release.
+CI exercises the SDK on Python 3.11, 3.12, and 3.13, including
+`test_standalone_sdk_live_gateway_contract`, which runs the SDK against a local
+live HTTP contract fixture for compatibility, discovery, allowed calls, denied
+calls, correlation IDs, and idempotency headers. Dependency range changes must
+keep that matrix green before release.
 
 `--strict-git` additionally requires a clean SDK package worktree and an exact
 release tag matching `v<project.version>` unless `--expected-tag` is supplied.
